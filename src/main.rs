@@ -1,35 +1,82 @@
 use actix_web::{App, HttpResponse, HttpServer, get, web};
+use rascii_art::{RenderOptions, render_to};
 use regex::Regex;
 use reqwest::Client;
-use std::fs::File;
+use std::env;
+use std::fs::{self, File};
 use std::io::copy;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-async fn download_image(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn convert_image_to_rascii(filepath: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let mut buffer = String::new();
+
+    render_to(
+        filepath.to_str().ok_or("Invalid filepath encoding")?,
+        &mut buffer,
+        &RenderOptions::new()
+            .height(30)
+            .colored(true)
+            .charset(rascii_art::charsets::BLOCK),
+    )
+    .map_err(|e| format!("Failed to render image {}: {}", filepath.display(), e))?;
+
+    Ok(buffer)
+}
+
+async fn download_image(url: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let client = Client::new();
-    let response = client.get(url).send().await?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send HTTP request: {}", e))?;
 
     if !response.status().is_success() {
         return Err(format!("Failed to download image: HTTP {}", response.status()).into());
     }
 
-    let bytes = response.bytes().await?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))?;
+    eprintln!("Downloaded image data: {} bytes", bytes.len());
 
     // Extract filename from URL
-    let filename = url
+    let raw_filename = url
         .rsplit('/')
         .next()
-        .and_then(|s| {
-            let s = s.split('?').next().unwrap_or("");
-            if s.is_empty() { None } else { Some(s) }
-        })
+        .and_then(|s| s.split('?').next())
+        .unwrap_or("");
+    let filename = Path::new(raw_filename)
+        .file_name()
+        .and_then(|n| n.to_str())
         .ok_or("Could not extract a valid filename from URL")?;
+    if filename.is_empty() {
+        return Err("Filename extracted from URL is empty".into());
+    }
 
-    let filepath = format!("./{}", filename);
-    let mut file = File::create(Path::new(&filepath))?;
-    copy(&mut bytes.as_ref(), &mut file)?;
+    // Create images directory if it doesn't exist
+    let mut filepath =
+        env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
+    filepath.push("images");
+    fs::create_dir_all(&filepath)
+        .map_err(|e| format!("Failed to create images directory: {}", e))?;
+    filepath.push(filename);
 
-    Ok(())
+    eprintln!("Attempting to save image to: {}", filepath.display());
+    let mut file = File::create(&filepath)
+        .map_err(|e| format!("Failed to create file {}: {}", filepath.display(), e))?;
+
+    copy(&mut bytes.as_ref(), &mut file).map_err(|e| {
+        format!(
+            "Failed to write image data to {}: {}",
+            filepath.display(),
+            e
+        )
+    })?;
+
+    eprintln!("Successfully saved image to: {}", filepath.display());
+    Ok(filepath)
 }
 
 #[get("/{url:.*}")]
@@ -39,14 +86,25 @@ async fn index(path: web::Path<String>) -> Result<HttpResponse, actix_web::Error
     if !img_re.is_match(&url) {
         return Ok(HttpResponse::BadRequest().body("Provided URL is not an image file."));
     }
-    download_image(&url).await.map_err(|e| {
+    let filepath = download_image(&url).await.map_err(|e| {
         actix_web::error::ErrorInternalServerError(format!("Failed to download image: {}", e))
     })?;
-    Ok(HttpResponse::Ok().body("Image downloaded successfully"))
+
+    eprintln!(
+        "Attempting to convert image from path: {}",
+        filepath.display()
+    );
+    let rascii = convert_image_to_rascii(&filepath).await?;
+    Ok(HttpResponse::Ok().body(rascii))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Ensure images directory exists
+    let mut images_dir = env::current_dir()?;
+    images_dir.push("images");
+    fs::create_dir_all(&images_dir)?;
+
     println!("Starting server on 127.0.0.1:8080");
     let server = HttpServer::new(|| App::new().service(index)).bind(("127.0.0.1", 8080));
 
