@@ -1,4 +1,4 @@
-use actix_web::{App, HttpResponse, HttpServer, get, web};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, get, web, http::header};
 use rascii_art::{RenderOptions, render_to};
 use regex::Regex;
 use reqwest::Client;
@@ -80,8 +80,19 @@ async fn download_image(url: &str) -> Result<PathBuf, Box<dyn std::error::Error>
 }
 
 #[get("/{url:.*}")]
-async fn index(path: web::Path<String>) -> Result<HttpResponse, actix_web::Error> {
+async fn index(req: HttpRequest, path: web::Path<String>) -> Result<HttpResponse, actix_web::Error> {
     let url = path.into_inner();
+
+    // Check User-Agent header
+    let user_agent = req.headers().get(header::USER_AGENT).and_then(|h| h.to_str().ok()).unwrap_or("");
+    let is_terminal = user_agent.to_lowercase().contains("curl") || user_agent.to_lowercase().contains("wget");
+
+    if !is_terminal {
+        return Ok(HttpResponse::Ok()
+            .content_type("text/plain")
+            .body("RASCII art is only available for terminal clients. Please use curl or a similar tool."));
+    }
+
     let img_re = Regex::new(r"(?i)\.(jpg|jpeg|png|gif|bmp|webp|tiff)(\?.*)?$").unwrap();
     if !img_re.is_match(&url) {
         return Ok(HttpResponse::BadRequest().body("Provided URL is not an image file."));
@@ -95,7 +106,7 @@ async fn index(path: web::Path<String>) -> Result<HttpResponse, actix_web::Error
         filepath.display()
     );
     let rascii = convert_image_to_rascii(&filepath).await?;
-    Ok(HttpResponse::Ok().body(rascii))
+    Ok(HttpResponse::Ok().content_type("text/plain; charset=utf-8").body(rascii))
 }
 
 #[actix_web::main]
