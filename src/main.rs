@@ -1,6 +1,6 @@
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, get, http::header, web};
-use rascii_art::{RenderOptions, render_image_to}; // Changed from render_bytes_to
 use image::load_from_memory;
+use rascii_art::{RenderOptions, render_image_to}; // Changed from render_bytes_to
 use regex::Regex;
 use reqwest::Client;
 
@@ -126,8 +126,8 @@ async fn index(
 async fn main() -> std::io::Result<()> {
     // Removed images directory creation as it's no longer needed
 
-    println!("Starting server on 127.0.0.1:8080");
-    let server = HttpServer::new(|| App::new().service(index)).bind(("127.0.0.1", 8080));
+    println!("Starting server on 0.0.0.0:8080");
+    let server = HttpServer::new(|| App::new().service(index)).bind(("0.0.0.0", 8080));
 
     let server = match server {
         Ok(s) => s,
