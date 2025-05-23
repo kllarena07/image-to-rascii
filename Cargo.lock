@@ -1117,6 +1117,8 @@ name = "image-to-rascii"
 version = "0.1.0"
 dependencies = [
  "actix-web",
+ "bytes",
+ "image",
  "rascii_art",
  "regex",
  "reqwest",

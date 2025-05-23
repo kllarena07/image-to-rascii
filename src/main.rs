@@ -1,32 +1,33 @@
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, get, http::header, web};
-use rascii_art::{RenderOptions, render_to};
+use rascii_art::{RenderOptions, render_image_to}; // Changed from render_bytes_to
+use image::load_from_memory;
 use regex::Regex;
 use reqwest::Client;
-use std::env;
-use std::fs::{self, File};
-use std::io::copy;
-use std::path::{Path, PathBuf};
 
 async fn convert_image_to_rascii(
-    filepath: &Path,
+    image_bytes: &[u8],
     use_color: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut buffer = String::new();
 
-    render_to(
-        filepath.to_str().ok_or("Invalid filepath encoding")?,
+    let img = load_from_memory(image_bytes)
+        .map_err(|e| format!("Failed to load image from memory: {}", e))?;
+
+    render_image_to(
+        &img,
         &mut buffer,
         &RenderOptions::new()
             .height(30)
             .colored(use_color)
             .charset(rascii_art::charsets::BLOCK),
     )
-    .map_err(|e| format!("Failed to render image {}: {}", filepath.display(), e))?;
+    .map_err(|e| format!("Failed to render image from buffer: {}", e))?;
 
     Ok(buffer)
 }
 
-async fn download_image(url: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+async fn download_image(url: &str) -> Result<web::Bytes, Box<dyn std::error::Error>> {
+    // Changed PathBuf to Bytes
     let client = Client::new();
     let response = client
         .get(url)
@@ -44,42 +45,9 @@ async fn download_image(url: &str) -> Result<PathBuf, Box<dyn std::error::Error>
         .map_err(|e| format!("Failed to read response body: {}", e))?;
     eprintln!("Downloaded image data: {} bytes", bytes.len());
 
-    // Extract filename from URL
-    let raw_filename = url
-        .rsplit('/')
-        .next()
-        .and_then(|s| s.split('?').next())
-        .unwrap_or("");
-    let filename = Path::new(raw_filename)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("Could not extract a valid filename from URL")?;
-    if filename.is_empty() {
-        return Err("Filename extracted from URL is empty".into());
-    }
+    // Removed file system operations
 
-    // Create images directory if it doesn't exist
-    let mut filepath =
-        env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
-    filepath.push("images");
-    fs::create_dir_all(&filepath)
-        .map_err(|e| format!("Failed to create images directory: {}", e))?;
-    filepath.push(filename);
-
-    eprintln!("Attempting to save image to: {}", filepath.display());
-    let mut file = File::create(&filepath)
-        .map_err(|e| format!("Failed to create file {}: {}", filepath.display(), e))?;
-
-    copy(&mut bytes.as_ref(), &mut file).map_err(|e| {
-        format!(
-            "Failed to write image data to {}: {}",
-            filepath.display(),
-            e
-        )
-    })?;
-
-    eprintln!("Successfully saved image to: {}", filepath.display());
-    Ok(filepath)
+    Ok(bytes) // Return the Bytes directly
 }
 
 #[get("/{url:.*}")]
@@ -97,7 +65,7 @@ async fn index(
     }
 
     // Download image
-    let filepath = download_image(&url).await.map_err(|e| {
+    let image_bytes = download_image(&url).await.map_err(|e| {
         eprintln!("Failed to download image from URL {}: {}", url, e);
         actix_web::error::ErrorInternalServerError(format!("Failed to download image: {}", e))
     })?;
@@ -120,16 +88,16 @@ async fn index(
 
     // Convert to RASCII or ASCII
     eprintln!(
-        "Attempting to convert image from path: {} (color: {})",
-        filepath.display(),
+        "Attempting to convert image from buffer ({} bytes) (color: {})",
+        image_bytes.len(),
         use_color
     );
-    let art_result = convert_image_to_rascii(&filepath, use_color)
+    let art_result = convert_image_to_rascii(&image_bytes, use_color) // Pass image_bytes slice
         .await
         .map_err(|e| {
             eprintln!(
-                "Failed to convert image to art for path {}: {}",
-                filepath.display(),
+                "Failed to convert image from buffer to art ({} bytes): {}",
+                image_bytes.len(),
                 e
             );
             actix_web::error::ErrorInternalServerError(format!(
@@ -156,10 +124,7 @@ async fn index(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Ensure images directory exists
-    let mut images_dir = env::current_dir()?;
-    images_dir.push("images");
-    fs::create_dir_all(&images_dir)?;
+    // Removed images directory creation as it's no longer needed
 
     println!("Starting server on 127.0.0.1:8080");
     let server = HttpServer::new(|| App::new().service(index)).bind(("127.0.0.1", 8080));
