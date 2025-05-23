@@ -1,4 +1,4 @@
-use actix_web::{App, HttpRequest, HttpResponse, HttpServer, get, web, http::header};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, get, http::header, web};
 use rascii_art::{RenderOptions, render_to};
 use regex::Regex;
 use reqwest::Client;
@@ -7,7 +7,10 @@ use std::fs::{self, File};
 use std::io::copy;
 use std::path::{Path, PathBuf};
 
-async fn convert_image_to_rascii(filepath: &Path) -> Result<String, Box<dyn std::error::Error>> {
+async fn convert_image_to_rascii(
+    filepath: &Path,
+    use_color: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut buffer = String::new();
 
     render_to(
@@ -15,7 +18,7 @@ async fn convert_image_to_rascii(filepath: &Path) -> Result<String, Box<dyn std:
         &mut buffer,
         &RenderOptions::new()
             .height(30)
-            .colored(true)
+            .colored(use_color)
             .charset(rascii_art::charsets::BLOCK),
     )
     .map_err(|e| format!("Failed to render image {}: {}", filepath.display(), e))?;
@@ -80,33 +83,75 @@ async fn download_image(url: &str) -> Result<PathBuf, Box<dyn std::error::Error>
 }
 
 #[get("/{url:.*}")]
-async fn index(req: HttpRequest, path: web::Path<String>) -> Result<HttpResponse, actix_web::Error> {
+async fn index(
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
     let url = path.into_inner();
 
-    // Check User-Agent header
-    let user_agent = req.headers().get(header::USER_AGENT).and_then(|h| h.to_str().ok()).unwrap_or("");
-    let is_terminal = user_agent.to_lowercase().contains("curl") || user_agent.to_lowercase().contains("wget");
-
-    if !is_terminal {
-        return Ok(HttpResponse::Ok()
-            .content_type("text/plain")
-            .body("RASCII art is only available for terminal clients. Please use curl or a similar tool."));
-    }
-
+    // Image validation first
     let img_re = Regex::new(r"(?i)\.(jpg|jpeg|png|gif|bmp|webp|tiff)(\?.*)?$").unwrap();
     if !img_re.is_match(&url) {
+        eprintln!("Validation failed: URL is not an image file: {}", url);
         return Ok(HttpResponse::BadRequest().body("Provided URL is not an image file."));
     }
+
+    // Download image
     let filepath = download_image(&url).await.map_err(|e| {
+        eprintln!("Failed to download image from URL {}: {}", url, e);
         actix_web::error::ErrorInternalServerError(format!("Failed to download image: {}", e))
     })?;
 
+    // Determine if color should be used based on User-Agent
+    let mut use_color = true; // Default to true (for curl, etc.)
+    if let Some(user_agent_header) = req.headers().get(header::USER_AGENT) {
+        if let Ok(user_agent_str) = user_agent_header.to_str() {
+            let ua_lower = user_agent_str.to_lowercase();
+            if ua_lower.contains("mozilla")
+                || ua_lower.contains("chrome")
+                || ua_lower.contains("safari")
+                || ua_lower.contains("firefox")
+                || ua_lower.contains("edge")
+            {
+                use_color = false; // It's a browser
+            }
+        }
+    }
+
+    // Convert to RASCII or ASCII
     eprintln!(
-        "Attempting to convert image from path: {}",
-        filepath.display()
+        "Attempting to convert image from path: {} (color: {})",
+        filepath.display(),
+        use_color
     );
-    let rascii = convert_image_to_rascii(&filepath).await?;
-    Ok(HttpResponse::Ok().content_type("text/plain; charset=utf-8").body(rascii))
+    let art_result = convert_image_to_rascii(&filepath, use_color)
+        .await
+        .map_err(|e| {
+            eprintln!(
+                "Failed to convert image to art for path {}: {}",
+                filepath.display(),
+                e
+            );
+            actix_web::error::ErrorInternalServerError(format!(
+                "Failed to convert image to art: {}",
+                e
+            ))
+        })?;
+
+    if use_color {
+        // Non-browser: Respond with plain text RASCII
+        eprintln!("Responding with plain text RASCII for URL: {}.", url);
+        Ok(HttpResponse::Ok()
+            .content_type("text/plain; charset=utf-8")
+            .body(art_result))
+    } else {
+        // Browser: Respond with HTML-formatted ASCII
+        eprintln!("Responding with HTML-formatted ASCII for URL: {}.", url);
+        let html_body = format!("<pre>{}</pre>", art_result);
+        Ok(HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body(html_body))
+    }
 }
 
 #[actix_web::main]
