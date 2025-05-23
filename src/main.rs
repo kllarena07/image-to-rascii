@@ -33,7 +33,7 @@ async fn download_image(url: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[get("/{url:.*}")]
-async fn convert_to_rascii(path: web::Path<String>) -> Result<HttpResponse, actix_web::Error> {
+async fn index(path: web::Path<String>) -> Result<HttpResponse, actix_web::Error> {
     let url = path.into_inner();
     let img_re = Regex::new(r"(?i)\.(jpg|jpeg|png|gif|bmp|webp|tiff)(\?.*)?$").unwrap();
     if !img_re.is_match(&url) {
@@ -48,8 +48,7 @@ async fn convert_to_rascii(path: web::Path<String>) -> Result<HttpResponse, acti
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     println!("Starting server on 127.0.0.1:8080");
-    let server =
-        HttpServer::new(|| App::new().service(convert_to_rascii)).bind(("127.0.0.1", 8080));
+    let server = HttpServer::new(|| App::new().service(index)).bind(("127.0.0.1", 8080));
 
     let server = match server {
         Ok(s) => s,
